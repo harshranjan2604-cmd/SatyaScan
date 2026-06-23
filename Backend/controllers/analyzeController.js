@@ -79,6 +79,26 @@ const runAnalysis = async (req) => {
     throw new Error("No text could be extracted from the provided input");
   }
 
+  // ── OCR coherence check ─────────────────────────────────────────────────────
+  // If the image has no real text (pure visual / AI-generated artwork), Tesseract
+  // returns pixel noise that looks like random characters. Detect this by measuring
+  // the ratio of alphanumeric characters in the extracted text.
+  // Threshold: if < 40% of non-whitespace chars are alphanumeric → treat as image-only.
+  let isGarbledOcr = false;
+  if (type === "image") {
+    const stripped = rawText.replace(/\s+/g, "");
+    if (stripped.length > 0) {
+      const alphaNum = stripped.replace(/[^a-zA-Z0-9]/g, "").length;
+      const ratio = alphaNum / stripped.length;
+      if (ratio < 0.40 || stripped.length < 20) {
+        isGarbledOcr = true;
+        console.log(`[OCR] Garbled output detected (ratio=${ratio.toFixed(2)}, len=${stripped.length}). Treating as visual image.`);
+      }
+    } else {
+      isGarbledOcr = true;
+    }
+  }
+
   // Track whether real AI analysis succeeded or fell back to defaults
   let apiWorking = true;
 
@@ -88,17 +108,25 @@ const runAnalysis = async (req) => {
     { language: "unknown", translatedText: rawText }
   );
 
-  const extractedClaims = await safeStep(
-    "extractClaims",
-    () => extractClaims(translatedText),
-    []
-  );
+  // Skip claim extraction entirely for garbled OCR (pure visual images)
+  const extractedClaims = isGarbledOcr
+    ? []
+    : await safeStep(
+        "extractClaims",
+        () => extractClaims(translatedText),
+        []
+      );
 
-  // If claims are empty it means extractClaims failed (API issue)
-  if (extractedClaims.length === 0) apiWorking = false;
+  const claimsToVerify = isGarbledOcr
+    ? [] // no claims for visual-only images
+    : extractedClaims.length > 0
+      ? extractedClaims
+      : translatedText.trim().split(/\s+/).length >= 4
+        ? [{ claim: translatedText.trim() }]
+        : [];
 
   const verifiedClaims = await Promise.all(
-    extractedClaims.map(async (item) => {
+    claimsToVerify.map(async (item) => {
       const claimText = item.claim;
       return safeStep(
         `verifyClaim("${claimText}")`,
@@ -113,15 +141,23 @@ const runAnalysis = async (req) => {
     })
   );
 
+  // For visual images with no readable text, use the raw OCR output for AI detection
+  // but fall back to a descriptive message so the UI shows something useful
+  const aiDetectionText = isGarbledOcr
+    ? rawText.length > 10 ? rawText : "Visual image with no extractable text"
+    : translatedText;
+
   const aiResult = await safeStep(
     "detectAIContent",
-    () => detectAIContent(translatedText),
+    () => detectAIContent(aiDetectionText),
     null
   );
 
   // null means AI detection failed → mark API as not working
   const aiLikelihood = aiResult?.aiLikelihood ?? DEFAULT_AI_LIKELIHOOD;
-  const aiReasoning = aiResult?.reasoning ?? "AI detection unavailable — please check your OPENAI_API_KEY.";
+  const aiReasoning = isGarbledOcr && !aiResult
+    ? "This appears to be a purely visual image with no readable text. AI content analysis was run on the pixel-extracted data."
+    : (aiResult?.reasoning ?? "AI detection unavailable. Please check your AI provider API key.");
   if (!aiResult) apiWorking = false;
 
   const sourceCredibility = inputUrl
@@ -152,11 +188,16 @@ const runAnalysis = async (req) => {
   }
 
   const claimsForResponse = verifiedClaims.map(
-    ({ claim, verdict, reasoning, sources }) => ({
+    ({ claim, verdict, confidence, reasoning, sources, sourceCount, trustedSourceCount }) => ({
       text: claim,
       verdict,
-      reasoning,
+      confidence,
+      reasoning: isGarbledOcr && !reasoning
+        ? "No readable text was found in this image. The image appears to be a pure visual with no embedded text."
+        : reasoning,
       sources,
+      sourceCount,
+      trustedSourceCount,
     })
   );
 
@@ -192,7 +233,7 @@ const runAnalysis = async (req) => {
     sourceCredibility,
     trustScore,
     checkId,
-    apiWorking,  // false when OpenAI key is invalid/missing — scores are fallback defaults
+    apiWorking,  // false when the AI provider key is invalid/missing and scores use fallback defaults
   };
 };
 

@@ -1,5 +1,6 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
+import { ThemeProvider } from './context/ThemeContext';
 import Navbar from './components/Navbar';
 import LandingPage from './pages/LandingPage';
 import AnalyzePage from './pages/AnalyzePage';
@@ -9,13 +10,26 @@ import ReportPage from './pages/ReportPage';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 
+// Pages that have their own built-in top bar — don't show the global Navbar
+const PAGES_WITH_OWN_NAV = ['/', '/analyze', '/results'];
+
+function Layout({ children }) {
+  const { pathname } = useLocation();
+  const showNav = !PAGES_WITH_OWN_NAV.includes(pathname);
+  return (
+    <div className="min-h-screen bg-gray-950 flex flex-col">
+      {showNav && <Navbar />}
+      <main className="flex-1">{children}</main>
+    </div>
+  );
+}
+
 export default function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <div className="min-h-screen bg-gray-950 flex flex-col">
-          <Navbar />
-          <main className="flex-1">
+    <ThemeProvider>
+      <AuthProvider>
+        <BrowserRouter>
+          <Layout>
             <Routes>
               <Route path="/" element={<LandingPage />} />
               <Route path="/analyze" element={<AnalyzePage />} />
@@ -32,9 +46,9 @@ export default function App() {
                 </div>
               } />
             </Routes>
-          </main>
-        </div>
-      </BrowserRouter>
-    </AuthProvider>
+          </Layout>
+        </BrowserRouter>
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
